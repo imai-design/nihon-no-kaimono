@@ -1073,6 +1073,7 @@ function buildBenchmark(K) {
 
   const sel = h('select', { id: 'bench-industry' },
     list.map(x => h('option', { value: x.name }, x.name)));
+  if (list.some(x => x.name === '製造業')) sel.value = '製造業';
   const inSales = h('input', { type: 'number', inputmode: 'decimal', min: '0', step: '1', placeholder: '例: 120', id: 'bench-sales' });
   const inStaff = h('input', { type: 'number', inputmode: 'numeric', min: '0', step: '1', placeholder: '例: 8', id: 'bench-staff' });
 
@@ -1158,6 +1159,14 @@ function buildBenchmark(K) {
     const max = Math.max(...rows.map(perHead), mine || 0);
     const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, width: W, role: 'img', 'aria-label': '業種別の1人あたり売上高' });
 
+    // 自社の線は棒より先に敷く（数字の上に重ならないように）
+    if (mine != null && isFinite(mine)) {
+      const x0 = barX + Math.min(mine / max * barW, barW);
+      el('line', { x1: x0, x2: x0, y1: padT, y2: H - 16, stroke: cssv('--series-8'), 'stroke-width': 2, 'stroke-dasharray': '4 3' }, svg);
+      const lb = el('text', { x: x0 + 6, y: H - 4, class: 'dlabel mono', 'font-size': 12, fill: cssv('--series-8') }, svg);
+      lb.textContent = 'あなたの会社 ' + jpMan(mine);
+    }
+
     rows.forEach((x, i) => {
       const y = padT + i * rowH;
       const isCur = x.name === current.name;
@@ -1165,7 +1174,8 @@ function buildBenchmark(K) {
       const nm = el('text', {
         x: barX - 12, y: y + 18, class: 'tick', 'text-anchor': 'end',
         'font-size': 12.5, 'font-weight': isCur ? 700 : 400,
-        fill: isCur ? cssv('--text-primary') : cssv('--text-secondary')
+        fill: isCur ? cssv('--text-primary') : cssv('--text-secondary'),
+        stroke: cssv('--surface-1'), 'stroke-width': 3, 'paint-order': 'stroke fill'
       }, svg);
       nm.textContent = x.name;
       el('path', {
@@ -1174,17 +1184,12 @@ function buildBenchmark(K) {
       }, svg).appendChild(el('title', {}, null)).textContent = `${x.name}：1人あたり ${jpMan(perHead(x))}`;
       const vl = el('text', {
         x: barX + w + 9, y: y + 19, class: 'dlabel mono', 'font-size': 11.5,
-        fill: isCur ? cssv('--text-primary') : cssv('--text-secondary')
+        fill: isCur ? cssv('--text-primary') : cssv('--text-secondary'),
+        stroke: cssv('--surface-1'), 'stroke-width': 3, 'paint-order': 'stroke fill'
       }, svg);
       vl.textContent = jpMan(perHead(x));
     });
 
-    if (mine != null && isFinite(mine)) {
-      const x0 = barX + Math.min(mine / max * barW, barW);
-      el('line', { x1: x0, x2: x0, y1: padT, y2: H - 16, stroke: cssv('--series-8'), 'stroke-width': 2, 'stroke-dasharray': '4 3' }, svg);
-      const lb = el('text', { x: x0 + 6, y: H - 4, class: 'dlabel mono', 'font-size': 12, fill: cssv('--series-8') }, svg);
-      lb.textContent = 'あなたの会社 ' + jpMan(mine);
-    }
     rankWrap.appendChild(svg);
   }
 
