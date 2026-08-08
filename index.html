@@ -241,6 +241,38 @@ ul.cautions li::before {
   width: 8px; height: 2px; background: var(--accent);
 }
 
+/* ---------- 自社と比べる（入力フォーム＋指標カード） ---------- */
+.bench-controls { display: grid; gap: 14px; margin-top: 4px; }
+@media (min-width: 720px) { .bench-controls { grid-template-columns: 1fr auto auto; align-items: end; } }
+.field { display: grid; gap: 5px; }
+.field label { font-size: 12.5px; color: var(--text-secondary); font-weight: 700; }
+.field select, .field input {
+  font: inherit; font-size: 15px; padding: 9px 11px;
+  border: 1px solid var(--baseline); background: #fff; color: var(--text-primary);
+  border-radius: 0; min-width: 0; width: 100%;
+}
+.field input { font-family: var(--mono); font-variant-numeric: tabular-nums; text-align: right; }
+.field select:focus-visible, .field input:focus-visible { outline: 2px solid var(--series-1); outline-offset: 1px; }
+.field .unit { font-size: 12px; color: var(--text-muted); }
+
+.kpis { display: grid; gap: 12px; margin-top: 20px; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); }
+.kpi { border: 1px solid var(--hairline); padding: 15px 16px; }
+.kpi .k { font-size: 12.5px; color: var(--text-secondary); line-height: 1.5; }
+.kpi .v {
+  font-size: 27px; font-weight: 800; letter-spacing: -0.02em; margin-top: 4px;
+  font-variant-numeric: tabular-nums; color: var(--text-primary);
+}
+.kpi .n { font-size: 12px; color: var(--text-muted); margin-top: 3px; line-height: 1.5; }
+.kpi .mine { font-size: 13px; margin-top: 9px; padding-top: 9px; border-top: 1px dashed var(--gridline); font-weight: 700; }
+.kpi .mine.up { color: var(--good); }
+.kpi .mine.down { color: var(--bad); }
+.kpi .mine.flat { color: var(--text-secondary); }
+
+.privacy {
+  margin-top: 16px; font-size: 12.5px; color: var(--text-secondary);
+  border-left: 3px solid var(--series-1); padding: 8px 0 8px 12px; line-height: 1.7;
+}
+
 /* 出典 */
 .source { padding: clamp(40px, 6vw, 72px) 0 clamp(56px, 8vw, 96px); border-top: 1px solid rgba(255,255,255,0.12); }
 .source h2 { font-size: clamp(21px, 3vw, 27px); margin-bottom: 18px; }
@@ -305,6 +337,12 @@ function jpMoneyParts(mil) {
     return `${cho}兆${rest.toLocaleString('ja-JP')}億円`;
   }
   return Math.round(oku).toLocaleString('ja-JP') + '億円';
+}
+// 1人あたりの金額は「万円」が体感に近い（入力は百万円）
+function jpMan(mil, digits) {
+  if (mil == null || !isFinite(mil)) return '—';
+  const man = mil * 100;
+  return (digits ? man.toFixed(digits) : Math.round(man).toLocaleString('ja-JP')) + '万円';
 }
 // 一覧・棒の値ラベルは単位を「億円」で揃える（兆と億が混ざると比べられない）
 function jpOku(mil) {
@@ -381,15 +419,19 @@ function niceTicks(max, count = 5) {
 /* =========================================================================
    起動
    ========================================================================= */
-fetch('data.json', { cache: 'no-cache' })
-  .then(r => { if (!r.ok) throw new Error('data.json が読めません (' + r.status + ')'); return r.json(); })
-  .then(render)
+Promise.all([
+  fetch('data.json', { cache: 'no-cache' })
+    .then(r => { if (!r.ok) throw new Error('data.json が読めません (' + r.status + ')'); return r.json(); }),
+  // 企業向けの統計は別ファイル。無くても本体は表示できるようにする
+  fetch('kigyo.json', { cache: 'no-cache' }).then(r => (r.ok ? r.json() : null)).catch(() => null)
+])
+  .then(([D, K]) => render(D, K))
   .catch(e => {
     document.getElementById('app').innerHTML =
       '<div class="wrap"><div class="err">データを表示できませんでした。<br>' + e.message + '</div></div>';
   });
 
-function render(D) {
+function render(D, K) {
   const app = document.getElementById('app');
   app.innerHTML = '';
 
@@ -411,7 +453,12 @@ function render(D) {
   app.appendChild(buildYoY(D, series, months, last));
   app.appendChild(buildSeasonal(D, series, months));
   if (D.longrun && D.longrun.years && D.longrun.years.length) app.appendChild(buildLongrun(D, series));
-  app.appendChild(buildSource(D));
+  // 企業向けの節は追加データ頼み。ここで失敗しても本体は表示できるようにする
+  if (K && K.industries && K.industries.length) {
+    try { app.appendChild(buildBenchmark(K)); }
+    catch (e) { console.error('企業向けセクションを描けませんでした', e); }
+  }
+  app.appendChild(buildSource(D, K));
 }
 
 /* ---------- 1. ヒーロー（レシート） ---------- */
@@ -545,99 +592,146 @@ function buildTrend(D, series, months) {
   const W = 940, H = 420, mL = 74, mR = 118, mT = 16, mB = 44;
   const iw = W - mL - mR, ih = H - mT - mB;
   const wrap = h('div', { class: 'chart-wrap rel' });
-  const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, width: W, role: 'img', 'aria-label': '業態別の月次販売額の推移' });
-
-  const all = [];
-  series.forEach(s => (D.values[s.key] || []).forEach(v => { if (v != null) all.push(v); }));
-  const max = Math.max(...all);
-  const ticks = niceTicks(max);
-  const yMax = ticks[ticks.length - 1];
-  const u = axisUnit(yMax);
-  const X = i => mL + (months.length === 1 ? iw / 2 : (i / (months.length - 1)) * iw);
-  const Y = v => mT + ih - (v / yMax) * ih;
-
-  ticks.forEach(t => {
-    el('line', { x1: mL, x2: mL + iw, y1: Y(t), y2: Y(t), class: 'grid-line' }, svg);
-    const lb = el('text', { x: mL - 10, y: Y(t) + 4, class: 'tick num', 'text-anchor': 'end' }, svg);
-    lb.textContent = fmtAxis(t, u);
-  });
-  el('line', { x1: mL, x2: mL + iw, y1: mT + ih, y2: mT + ih, class: 'axis-line' }, svg);
-
-  months.forEach((m, i) => {
-    if (!m.endsWith('-01')) return;
-    const lb = el('text', { x: X(i), y: H - 16, class: 'tick', 'text-anchor': 'middle' }, svg);
-    lb.textContent = m.split('-')[0];
-    el('line', { x1: X(i), x2: X(i), y1: mT, y2: mT + ih, class: 'grid-line' }, svg);
-  });
-
-  const paths = {};
-  const endLabels = [];
-  series.forEach(s => {
-    const vs = D.values[s.key] || [];
-    let d = '', open = false;
-    vs.forEach((v, i) => {
-      if (v == null) { open = false; return; }
-      d += (open ? 'L' : 'M') + X(i).toFixed(1) + ',' + Y(v).toFixed(1) + ' ';
-      open = true;
-    });
-    paths[s.key] = el('path', {
-      d, fill: 'none', stroke: s.color, 'stroke-width': 2,
-      'stroke-linejoin': 'round', 'stroke-linecap': 'round'
-    }, svg);
-    // 直接ラベル（右端）。位置は後でまとめて重なり回避する
-    let li = vs.length - 1;
-    while (li >= 0 && vs[li] == null) li--;
-    if (li >= 0) {
-      const t = el('text', {
-        x: mL + iw + 10, y: Y(vs[li]) + 4, class: 'dlabel',
-        fill: cssv('--text-primary'), 'font-size': 12.5
-      }, svg);
-      t.textContent = s.short || s.name;
-      paths[s.key + '_lbl'] = t;
-      endLabels.push({ t, y: Y(vs[li]) + 4 });
-    }
-  });
-  declutter(endLabels, 18, mT + 6, mT + ih);
-
-  // クロスヘア＋ツールチップ
-  const cross = el('line', { x1: 0, x2: 0, y1: mT, y2: mT + ih, stroke: cssv('--baseline'), 'stroke-width': 1, opacity: 0 }, svg);
-  const dots = series.map(s => el('circle', { r: 4.5, fill: s.color, stroke: cssv('--surface-1'), 'stroke-width': 2, opacity: 0 }, svg));
+  const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, width: W, role: 'img', 'aria-label': '業態別の販売額の推移' });
   const tip = h('div', { class: 'tip' });
-  const hit = el('rect', { x: mL, y: mT, width: iw, height: ih, fill: 'transparent' }, svg);
+  wrap.appendChild(svg); wrap.appendChild(tip);
 
-  function move(evt) {
-    const r = svg.getBoundingClientRect();
-    const sx = (evt.clientX - r.left) * (W / r.width);
-    let i = Math.round(((sx - mL) / iw) * (months.length - 1));
-    i = Math.max(0, Math.min(months.length - 1, i));
-    cross.setAttribute('opacity', 1);
-    cross.setAttribute('x1', X(i)); cross.setAttribute('x2', X(i));
-    const rows = [];
-    series.forEach((s, k) => {
-      const v = (D.values[s.key] || [])[i];
-      if (v == null || paths[s.key].getAttribute('data-off') === '1') { dots[k].setAttribute('opacity', 0); return; }
-      dots[k].setAttribute('opacity', 1);
-      dots[k].setAttribute('cx', X(i)); dots[k].setAttribute('cy', Y(v));
-      rows.push({ s, v });
+  // 生の月次だと季節の波でギザギザになり流れが読めない。
+  // 12か月の後方移動平均＝その月までの1年ぶんの平均で、季節の影響を打ち消す。
+  const smooth = {};
+  series.forEach(s => {
+    const v = D.values[s.key] || [];
+    smooth[s.key] = v.map((_, i) => {
+      if (i < 11) return null;
+      let sum = 0;
+      for (let j = i - 11; j <= i; j++) { if (v[j] == null) return null; sum += v[j]; }
+      return sum / 12;
     });
-    rows.sort((a, b) => b.v - a.v);
-    tip.innerHTML = '<div class="tm">' + ymLabel(months[i]) + '</div>' +
-      rows.map(r => `<div class="row"><span class="swatch" style="background:${r.s.color};width:10px;height:10px;border-radius:2px;display:inline-block"></span><span>${r.s.short || r.s.name}</span><span class="v">${jpOku(r.v)}</span></div>`).join('');
-    tip.style.opacity = 1;
-    // 横スクロールしている場合を考慮して、SVGの実描画位置を基準にする
-    const wr = wrap.getBoundingClientRect();
-    const px = (X(i) / W) * r.width + (r.left - wr.left);
-    tip.style.left = Math.min(Math.max(8, px + 14), Math.max(8, wrap.clientWidth - 210)) + 'px';
-    tip.style.top = '14px';
-  }
-  hit.addEventListener('mousemove', move);
-  hit.addEventListener('touchmove', e => { move(e.touches[0]); e.preventDefault(); }, { passive: false });
-  hit.addEventListener('mouseleave', () => {
-    tip.style.opacity = 0; cross.setAttribute('opacity', 0);
-    dots.forEach(d => d.setAttribute('opacity', 0));
   });
 
-  wrap.appendChild(svg); wrap.appendChild(tip);
+  const hidden = new Set();
+  let mode = 'smooth';
+  const dataOf = k => (mode === 'smooth' ? smooth[k] : (D.values[k] || []));
+
+  const X = i => mL + (months.length === 1 ? iw / 2 : (i / (months.length - 1)) * iw);
+  let Y = v => v;
+
+  function draw() {
+    while (svg.firstChild) svg.removeChild(svg.firstChild);
+    tip.style.opacity = 0;
+    const shown = series.filter(s => !hidden.has(s.key));
+    const all = [];
+    shown.forEach(s => dataOf(s.key).forEach(v => { if (v != null) all.push(v); }));
+    if (!all.length) return;
+
+    const ticks = niceTicks(Math.max(...all));
+    const yMax = ticks[ticks.length - 1];
+    const u = axisUnit(yMax);
+    Y = v => mT + ih - (v / yMax) * ih;
+
+    ticks.forEach(t => {
+      el('line', { x1: mL, x2: mL + iw, y1: Y(t), y2: Y(t), class: 'grid-line' }, svg);
+      const lb = el('text', { x: mL - 10, y: Y(t) + 4, class: 'tick num', 'text-anchor': 'end' }, svg);
+      lb.textContent = fmtAxis(t, u);
+    });
+    el('line', { x1: mL, x2: mL + iw, y1: mT + ih, y2: mT + ih, class: 'axis-line' }, svg);
+
+    months.forEach((m, i) => {
+      if (!m.endsWith('-01')) return;
+      const lb = el('text', { x: X(i), y: H - 16, class: 'tick', 'text-anchor': 'middle' }, svg);
+      lb.textContent = m.split('-')[0];
+      el('line', { x1: X(i), x2: X(i), y1: mT, y2: mT + ih, class: 'grid-line' }, svg);
+    });
+
+    const ends = [];
+    shown.forEach(s => {
+      const vs = dataOf(s.key);
+      let d = '', open = false;
+      vs.forEach((v, i) => {
+        if (v == null) { open = false; return; }
+        d += (open ? 'L' : 'M') + X(i).toFixed(1) + ',' + Y(v).toFixed(1) + ' ';
+        open = true;
+      });
+      el('path', {
+        d, fill: 'none', stroke: s.color, 'stroke-width': mode === 'smooth' ? 2.5 : 1.6,
+        'stroke-linejoin': 'round', 'stroke-linecap': 'round',
+        opacity: mode === 'smooth' ? 1 : 0.85
+      }, svg);
+
+      let li = vs.length - 1;
+      while (li >= 0 && vs[li] == null) li--;
+      if (li >= 0) {
+        const t = el('text', {
+          x: mL + iw + 10, y: Y(vs[li]) + 4, class: 'dlabel',
+          fill: cssv('--text-primary'), 'font-size': 12.5
+        }, svg);
+        t.textContent = s.short || s.name;
+        ends.push({ t, y: Y(vs[li]) + 4 });
+      }
+    });
+    declutter(ends, 18, mT + 6, mT + ih);
+
+    // クロスヘアとツールチップ
+    const cross = el('line', { x1: 0, x2: 0, y1: mT, y2: mT + ih, stroke: cssv('--baseline'), 'stroke-width': 1, opacity: 0 }, svg);
+    const dots = shown.map(s => el('circle', { r: 4.5, fill: s.color, stroke: cssv('--surface-1'), 'stroke-width': 2, opacity: 0 }, svg));
+    const hit = el('rect', { x: mL, y: mT, width: iw, height: ih, fill: 'transparent' }, svg);
+
+    function move(evt) {
+      const r = svg.getBoundingClientRect();
+      const sx = (evt.clientX - r.left) * (W / r.width);
+      let i = Math.round(((sx - mL) / iw) * (months.length - 1));
+      i = Math.max(0, Math.min(months.length - 1, i));
+      cross.setAttribute('opacity', 1);
+      cross.setAttribute('x1', X(i)); cross.setAttribute('x2', X(i));
+
+      const rows = [];
+      shown.forEach((s, k) => {
+        const v = dataOf(s.key)[i];
+        if (v == null) { dots[k].setAttribute('opacity', 0); return; }
+        dots[k].setAttribute('opacity', 1);
+        dots[k].setAttribute('cx', X(i)); dots[k].setAttribute('cy', Y(v));
+        rows.push({ s, v, raw: (D.values[s.key] || [])[i] });
+      });
+      rows.sort((a, b) => b.v - a.v);
+      tip.innerHTML = '<div class="tm">' + ymLabel(months[i]) + '</div>' + rows.map(r =>
+        `<div class="row"><span class="swatch" style="background:${r.s.color};width:10px;height:10px;border-radius:2px;display:inline-block"></span>`
+        + `<span>${r.s.short || r.s.name}</span><span class="v">`
+        + (mode === 'smooth'
+            ? `12か月平均 ${jpOku(r.v)}` + (r.raw != null ? `<br><span style="color:var(--text-muted)">この月 ${jpOku(r.raw)}</span>` : '')
+            : jpOku(r.v))
+        + `</span></div>`).join('');
+      tip.style.opacity = 1;
+
+      const wr = wrap.getBoundingClientRect();
+      const px = (X(i) / W) * r.width + (r.left - wr.left);
+      tip.style.left = Math.min(Math.max(8, px + 14), Math.max(8, wrap.clientWidth - 210)) + 'px';
+      tip.style.top = '14px';
+    }
+    hit.addEventListener('mousemove', move);
+    hit.addEventListener('touchmove', e => { move(e.touches[0]); e.preventDefault(); }, { passive: false });
+    hit.addEventListener('mouseleave', () => {
+      tip.style.opacity = 0; cross.setAttribute('opacity', 0);
+      dots.forEach(d => d.setAttribute('opacity', 0));
+    });
+  }
+
+  const cap = h('p', { class: 'sub' }, '');
+  const MODES = [
+    { key: 'smooth', label: '季節をならした線', cap: '12か月の平均で季節の波を消し、流れだけを見ています。1年ぶんそろう2014年12月から始まります。' },
+    { key: 'raw', label: '月ごとのまま', cap: '毎月の実額そのままです。年末に跳ね上がるのは季節の波で、実力の変化ではありません。' }
+  ];
+  const modePicker = h('div', { class: 'legend picker' }, MODES.map(m => {
+    const b = h('button', { type: 'button', 'aria-pressed': m.key === mode ? 'true' : 'false' }, [h('span', {}, m.label)]);
+    b.addEventListener('click', () => {
+      mode = m.key;
+      modePicker.querySelectorAll('button').forEach(x => x.setAttribute('aria-pressed', 'false'));
+      b.setAttribute('aria-pressed', 'true');
+      cap.textContent = m.cap;
+      draw();
+    });
+    return b;
+  }));
+  cap.textContent = MODES[0].cap;
 
   const legend = h('div', { class: 'legend' }, series.map(s => {
     const b = h('button', { type: 'button', 'aria-pressed': 'true' }, [
@@ -647,28 +741,27 @@ function buildTrend(D, series, months) {
     b.addEventListener('click', () => {
       const on = b.getAttribute('aria-pressed') === 'true';
       b.setAttribute('aria-pressed', on ? 'false' : 'true');
-      paths[s.key].setAttribute('opacity', on ? 0 : 1);
-      paths[s.key].setAttribute('data-off', on ? '1' : '0');
-      if (paths[s.key + '_lbl']) paths[s.key + '_lbl'].setAttribute('opacity', on ? 0 : 1);
+      if (on) hidden.add(s.key); else hidden.delete(s.key);
+      draw();
     });
     return b;
   }));
 
-  const c = card('月ごとの販売額の移り変わり',
-    '線をなぞると、その月の金額が出ます。凡例を押すと業態を隠せます。',
-    null,
+  draw();
+
+  const c = h('div', { class: 'card' }, [
+    h('h3', {}, '月ごとの販売額の移り変わり'),
+    cap, modePicker, wrap, legend,
+    h('p', { class: 'note' },
+      '注：調査対象の見直しにより、線がつながって見えても前後で数値の水準が変わっている箇所があります（2020年3月・2025年1月など）。'),
     tableOf(['年月', ...series.map(s => s.short || s.name)],
       months.map((m, i) => [ymLabel(m), ...series.map(s => {
         const v = (D.values[s.key] || [])[i]; return v == null ? '—' : jpMoneyParts(v);
-      })])));
-  c.insertBefore(wrap, c.querySelector('details'));
-  c.insertBefore(legend, c.querySelector('details'));
-  c.insertBefore(h('p', { class: 'note' },
-    '注：調査対象の見直しにより、線がつながって見えても前後で数値の水準が変わっている箇所があります（2020年3月・2025年1月など）。'),
-    c.querySelector('details'));
+      })]))
+  ]);
 
   return section('02', 'どう変わってきた？',
-    '同じ図にすべての業態を重ねると、伸びている店・そうでない店の差がはっきりします。縦軸はすべて同じ「金額」です（2つの目盛りは使っていません）。',
+    '線をなぞるとその月の金額が出ます。凡例を押すと業態を隠せます。縦軸はすべて同じ「金額」です（2つの目盛りは使っていません）。',
     [c]);
 }
 
@@ -965,9 +1058,203 @@ function buildLongrun(D, series) {
     [c]);
 }
 
+/* ---------- 6. 自分の会社と比べる（企業活動基本調査） ---------- */
+function buildBenchmark(K) {
+  const all = K.industries.filter(x => x.sales && x.companies);
+  const majors = all.filter(x => x.level === 'major');
+  const list = (majors.length ? majors : all).slice();
+  if (!list.length) return h('div');
+
+  // 指標はすべて実額から計算する（JSONには比率を持たせていない）
+  const perCompany = x => x.sales / x.companies;                       // 1社あたり売上高（百万円）
+  const opMargin   = x => (x.operating_profit == null ? null : x.operating_profit / x.sales * 100);
+  const perHead    = x => (x.employees ? x.sales / x.employees : null); // 1人あたり売上高（百万円）
+  const prod       = x => (x.employees && x.value_added != null ? x.value_added / x.employees : null);
+
+  const sel = h('select', { id: 'bench-industry' },
+    list.map(x => h('option', { value: x.name }, x.name)));
+  const inSales = h('input', { type: 'number', inputmode: 'decimal', min: '0', step: '1', placeholder: '例: 120', id: 'bench-sales' });
+  const inStaff = h('input', { type: 'number', inputmode: 'numeric', min: '0', step: '1', placeholder: '例: 8', id: 'bench-staff' });
+
+  const kpis = h('div', { class: 'kpis' });
+  const headline = h('p', { class: 'sub' }, '');
+  const rankWrap = h('div', { class: 'chart-wrap' });
+  const tableSlot = h('div', {});
+
+  function cmp(mine, avg, unitFn) {
+    if (mine == null || !isFinite(mine) || !avg) return null;
+    const r = mine / avg * 100;
+    const cls = r >= 105 ? 'up' : r <= 95 ? 'down' : 'flat';
+    const word = r >= 105 ? '上' : r <= 95 ? '下' : 'ほぼ同じ';
+    const txt = cls === 'flat'
+      ? `あなた ${unitFn(mine)}（平均とほぼ同じ）`
+      : `あなた ${unitFn(mine)}（平均の${Math.round(r)}%＝平均より${word}）`;
+    return h('div', { class: 'mine ' + cls }, txt);
+  }
+
+  function kpi(k, v, n, mineEl) {
+    const c = h('div', { class: 'kpi' }, [h('div', { class: 'k' }, k), h('div', { class: 'v' }, v), h('div', { class: 'n' }, n)]);
+    if (mineEl) c.appendChild(mineEl);
+    return c;
+  }
+
+  function update() {
+    const x = list.find(i => i.name === sel.value) || list[0];
+    const mySales = parseFloat(inSales.value);   // 百万円
+    const myStaff = parseFloat(inStaff.value);   // 人
+    const hasSales = isFinite(mySales) && mySales > 0;
+    const hasStaff = isFinite(myStaff) && myStaff > 0;
+
+    headline.textContent =
+      `${x.name}に集計された企業は${x.companies.toLocaleString('ja-JP')}社、従業者は${x.employees ? x.employees.toLocaleString('ja-JP') + '人' : '—'}。`
+      + `この調査は従業者50人以上かつ資本金3,000万円以上の会社が対象なので、平均は中堅以上に寄っています。`;
+
+    kpis.innerHTML = '';
+    kpis.appendChild(kpi('1社あたりの売上高', jpMoneyParts(perCompany(x)),
+      '売上高 ÷ 企業数', hasSales ? cmp(mySales, perCompany(x), v => jpMoneyParts(v)) : null));
+
+    const om = opMargin(x);
+    kpis.appendChild(kpi('売上高営業利益率', om == null ? '—' : om.toFixed(2) + '%',
+      '営業利益 ÷ 売上高'));
+
+    const ph = perHead(x);
+    kpis.appendChild(kpi('1人あたりの売上高', ph == null ? '—' : jpMan(ph),
+      '売上高 ÷ 従業者数',
+      (hasSales && hasStaff) ? cmp(mySales / myStaff, ph, v => jpMan(v)) : null));
+
+    const pd = prod(x);
+    kpis.appendChild(kpi('1人あたりの付加価値額', pd == null ? '—' : jpMan(pd),
+      'いわゆる労働生産性'));
+
+    if (x.rd_ratio != null) {
+      kpis.appendChild(kpi('売上高に対する研究開発費', x.rd_ratio.toFixed(2) + '%',
+        '経済産業省が公表している比率'));
+    }
+    if (x.subsidiaries_overseas) {
+      kpis.appendChild(kpi('海外の子会社・関連会社', x.subsidiaries_overseas.toLocaleString('ja-JP') + '社',
+        `1社あたり ${(x.subsidiaries_overseas / x.companies).toFixed(1)}社`));
+    }
+
+    drawRank(x, (hasSales && hasStaff) ? mySales / myStaff : null);
+    drawCapital(x.name);
+
+    tableSlot.innerHTML = '';
+    tableSlot.appendChild(tableOf(['業種', '企業数', '1社あたり売上高', '営業利益率', '1人あたり売上高', '1人あたり付加価値額'],
+      list.slice().sort((a, b) => (perHead(b) || 0) - (perHead(a) || 0)).map(i => [
+        i.name, i.companies.toLocaleString('ja-JP') + '社', jpMoneyParts(perCompany(i)),
+        opMargin(i) == null ? '—' : opMargin(i).toFixed(2) + '%',
+        perHead(i) == null ? '—' : jpMan(perHead(i)),
+        prod(i) == null ? '—' : jpMan(prod(i))
+      ])));
+  }
+
+  // 業種別の1人あたり売上高。選んだ業種と自社の位置を目立たせる
+  function drawRank(current, mine) {
+    rankWrap.innerHTML = '';
+    const rows = list.filter(x => perHead(x) != null).sort((a, b) => perHead(b) - perHead(a));
+    const W = 900, rowH = 30, padT = 8, barX = 250, padR = 120;
+    const H = padT + rows.length * rowH + 16;
+    const barW = W - barX - padR;
+    const max = Math.max(...rows.map(perHead), mine || 0);
+    const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, width: W, role: 'img', 'aria-label': '業種別の1人あたり売上高' });
+
+    rows.forEach((x, i) => {
+      const y = padT + i * rowH;
+      const isCur = x.name === current.name;
+      const w = Math.max(2, perHead(x) / max * barW);
+      const nm = el('text', {
+        x: barX - 12, y: y + 18, class: 'tick', 'text-anchor': 'end',
+        'font-size': 12.5, 'font-weight': isCur ? 700 : 400,
+        fill: isCur ? cssv('--text-primary') : cssv('--text-secondary')
+      }, svg);
+      nm.textContent = x.name;
+      el('path', {
+        d: roundedRightBar(barX, y + 4, w, 20, 4),
+        fill: isCur ? cssv('--series-1') : cssv('--gridline')
+      }, svg).appendChild(el('title', {}, null)).textContent = `${x.name}：1人あたり ${jpMan(perHead(x))}`;
+      const vl = el('text', {
+        x: barX + w + 9, y: y + 19, class: 'dlabel mono', 'font-size': 11.5,
+        fill: isCur ? cssv('--text-primary') : cssv('--text-secondary')
+      }, svg);
+      vl.textContent = jpMan(perHead(x));
+    });
+
+    if (mine != null && isFinite(mine)) {
+      const x0 = barX + Math.min(mine / max * barW, barW);
+      el('line', { x1: x0, x2: x0, y1: padT, y2: H - 16, stroke: cssv('--series-8'), 'stroke-width': 2, 'stroke-dasharray': '4 3' }, svg);
+      const lb = el('text', { x: x0 + 6, y: H - 4, class: 'dlabel mono', 'font-size': 12, fill: cssv('--series-8') }, svg);
+      lb.textContent = 'あなたの会社 ' + jpMan(mine);
+    }
+    rankWrap.appendChild(svg);
+  }
+
+  sel.addEventListener('change', update);
+  inSales.addEventListener('input', update);
+  inStaff.addEventListener('input', update);
+
+  const controls = h('div', { class: 'bench-controls' }, [
+    h('div', { class: 'field' }, [h('label', { for: 'bench-industry' }, '業種をえらぶ'), sel]),
+    h('div', { class: 'field' }, [h('label', { for: 'bench-sales' }, '年間の売上高'), inSales, h('span', { class: 'unit' }, '単位：百万円（1億円＝100）')]),
+    h('div', { class: 'field' }, [h('label', { for: 'bench-staff' }, '従業員の人数'), inStaff, h('span', { class: 'unit' }, '単位：人')])
+  ]);
+
+  const c1 = h('div', { class: 'card' }, [
+    h('h3', {}, (K.meta.year || '') + 'の業種平均'),
+    headline, controls,
+    h('p', { class: 'privacy' }, '入力した数字はこの画面の中だけで計算します。どこにも送信しませんし、保存もしません。空欄のままでも業種の平均は見られます。'),
+    kpis
+  ]);
+
+  const c2 = h('div', { class: 'card' }, [
+    h('h3', {}, '業種別の1人あたり売上高'),
+    h('p', { class: 'sub' }, '選んだ業種が青、あなたの会社を入れると赤い点線が入ります。人手のかかる業種ほど左に来ます。'),
+    rankWrap, tableSlot
+  ]);
+
+  // 同じ業種でも規模で数字はまるで違う。資本金の規模別も出す
+  const capWrap = h('div', {});
+  const c3 = h('div', { class: 'card' }, [
+    h('h3', {}, '同じ業種の、規模べつの数字'),
+    h('p', { class: 'sub' }, '会社の規模（資本金）ごとの平均です。自社に近い規模の行と比べてください。'),
+    capWrap
+  ]);
+
+  function drawCapital(name) {
+    capWrap.innerHTML = '';
+    const bands = (K.by_capital || {})[name];
+    if (!bands || !bands.length) {
+      capWrap.appendChild(h('p', { class: 'note' }, 'この業種は規模べつの数字が公表されていません。'));
+      return;
+    }
+    const t = h('table', {}, [
+      h('thead', {}, h('tr', {}, ['資本金の規模', '企業数', '1社あたり売上高', '営業利益率', '1社あたり付加価値額'].map(x => h('th', {}, x)))),
+      h('tbody', {}, bands.map(b => {
+        const om = (b.operating_profit == null || !b.sales) ? null : b.operating_profit / b.sales * 100;
+        return h('tr', {}, [
+          h('td', {}, b.band),
+          h('td', { class: 'num' }, b.companies == null ? '—' : b.companies.toLocaleString('ja-JP') + '社'),
+          h('td', { class: 'num' }, (b.sales && b.companies) ? jpMoneyParts(b.sales / b.companies) : '—'),
+          h('td', { class: 'num' }, om == null ? '—' : om.toFixed(2) + '%'),
+          h('td', { class: 'num' }, (b.value_added != null && b.companies) ? jpMoneyParts(b.value_added / b.companies) : '—')
+        ]);
+      }))
+    ]);
+    const sc = h('div', { class: 'tbl-scroll' }); sc.appendChild(t);
+    capWrap.appendChild(sc);
+  }
+
+  update();
+
+  return section('06', '自分の会社と比べてみる',
+    '経済産業省は毎年「企業活動基本調査」で、業種ごとの売上高・利益・従業者数を集計しています。'
+    + '自社の数字を入れると、同じ業種の平均とどれくらい違うかが分かります。',
+    [c1, c2, c3]);
+}
+
 /* ---------- 6. 出典 ---------- */
-function buildSource(D) {
-  const links = (D.meta.sources || []).map(s =>
+function buildSource(D, K) {
+  const srcs = (D.meta.sources || []).concat((K && K.meta && K.meta.sources) || []);
+  const links = srcs.map(s =>
     h('li', {}, [h('a', { href: s.url, rel: 'noopener', target: '_blank' }, s.name)]));
 
   return h('section', { class: 'source' }, [
@@ -976,6 +1263,8 @@ function buildSource(D) {
       h('p', {}, '表示している数字はすべて、国が公開しているものをそのまま使っています。作り話も推計も入れていません。'),
       h('ul', {}, [
         h('li', {}, '出典：「商業動態統計調査」（経済産業省）'),
+        ...(K ? [h('li', {}, '出典：「経済産業省企業活動基本調査」（経済産業省）' + (K.meta && K.meta.year ? '　' + K.meta.year + '実績' : ''))] : []),
+        ...(K && K.meta && K.meta.scope_note ? [h('li', {}, K.meta.scope_note + '中小・小規模の会社は含まれないため、平均は中堅以上に寄ります。')] : []),
         h('li', {}, [h('span', {}, '出典：政府統計の総合窓口（e-Stat）　'), h('a', { href: 'https://www.e-stat.go.jp/', rel: 'noopener', target: '_blank' }, 'https://www.e-stat.go.jp/')]),
         h('li', {}, '同統計の公表Excel（時系列データ）を、表示用に単位変換・並べ替えして作成しています。'),
         ...links
